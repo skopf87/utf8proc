@@ -554,7 +554,30 @@ UTF8PROC_DLLEXPORT utf8proc_ssize_t utf8proc_decompose_custom(
     utf8proc_ssize_t rpos = 0;
     utf8proc_ssize_t decomp_result;
     utf8proc_int32_t boundclass = UTF8PROC_BOUNDCLASS_START;
+    /* ASCII code points are unchanged by decomposition/compat mapping and have
+       no effect on grapheme boundary state unless one of the other options is
+       set, so for the common options copy ASCII runs directly. */
+    const int ascii_fast = custom_func == NULL &&
+      !(options & ~(unsigned int)(UTF8PROC_NULLTERM | UTF8PROC_STABLE |
+                                  UTF8PROC_COMPAT | UTF8PROC_COMPOSE | UTF8PROC_DECOMPOSE));
+    const utf8proc_ssize_t ascii_wpos_limit =
+      (utf8proc_ssize_t)(SSIZE_MAX/sizeof(utf8proc_int32_t)/2) - 1;
     while (1) {
+      if (ascii_fast) {
+        if (options & UTF8PROC_NULLTERM) {
+          while (str[rpos] != 0 && str[rpos] < 0x80 && wpos < ascii_wpos_limit) {
+            if (buffer && bufsize > wpos) buffer[wpos] = str[rpos];
+            wpos++;
+            rpos++;
+          }
+        } else {
+          while (rpos < strlen && str[rpos] < 0x80 && wpos < ascii_wpos_limit) {
+            if (buffer && bufsize > wpos) buffer[wpos] = str[rpos];
+            wpos++;
+            rpos++;
+          }
+        }
+      }
       if (options & UTF8PROC_NULLTERM) {
         utf8proc_ssize_t nread = utf8proc_iterate(str + rpos, -1, &uc);
         /* checking of return value is not necessary,
@@ -597,6 +620,12 @@ UTF8PROC_DLLEXPORT utf8proc_ssize_t utf8proc_decompose_custom(
       if (uc2 < 0) {
         /* cannot recombine; skip grapheme break */
         pos+=2;
+        continue;
+      }
+      if (uc2 < 0x300) {
+        /* no code point below U+0300 has a non-zero combining class, so uc2
+           can never be moved in front of uc1 */
+        pos++;
         continue;
       }
       property1 = unsafe_get_property(uc1);
@@ -670,6 +699,16 @@ UTF8PROC_DLLEXPORT utf8proc_ssize_t utf8proc_normalize_utf32(utf8proc_int32_t *b
         starter = NULL;
         starter_property = NULL;
         max_combining_class = -1;
+        continue;
+      }
+      if (current_char < 0x80) {
+        /* ASCII: combining class 0 and never the second element of a
+           composition, so it just becomes the new starter */
+        buffer[wpos] = current_char;
+        starter = buffer + wpos;
+        starter_property = NULL;
+        max_combining_class = -1;
+        wpos++;
         continue;
       }
       const utf8proc_property_t *current_property = unsafe_get_property(current_char);

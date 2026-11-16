@@ -87,12 +87,81 @@ static void issue288(void) /* #288 */
     printf("PASSED: utf8proc_normalize_utf32 preserves uninterpretable codepoints\n");
 }
 
+/* The ASCII fast path in utf8proc_decompose_custom is only used without a
+   custom function, so an identity custom function gives the reference result
+   of the general code path. */
+static utf8proc_int32_t identity_func(utf8proc_int32_t c, void *data)
+{
+    (void) data;
+    return c;
+}
+
+static void check_ascii_fast_path(void)
+{
+    static const char *inputs[] = {
+        "",
+        "a",
+        "plain ASCII text with spaces, digits 0123456789 and punctuation!?",
+        "caf\xc3\xa9 and cafe\xcc\x81 mixed with ASCII",
+        "x\xcc\x81\xcc\xa3y",                       /* ASCII + reordered combining marks */
+        "\xea\xb0\x80 ASCII after Hangul \xe1\x84\x80\xe1\x85\xa1z",
+        "tail ASCII after emoji \xf0\x9f\x98\x80 and more text here",
+        "A\xcc\x8a\xcc\x81 ring and acute then 12345678901234567890",
+        "tab\there\nnewline\r\nand\x7f",
+        "0123456789abcdef0123456789abcdef0123456789abcdef",
+    };
+    static const unsigned int options[] = {
+        0,
+        UTF8PROC_STABLE,
+        UTF8PROC_COMPOSE,
+        UTF8PROC_DECOMPOSE,
+        UTF8PROC_COMPOSE | UTF8PROC_COMPAT,
+        UTF8PROC_DECOMPOSE | UTF8PROC_COMPAT | UTF8PROC_STABLE,
+        UTF8PROC_COMPOSE | UTF8PROC_CASEFOLD,
+        UTF8PROC_COMPOSE | UTF8PROC_STRIPCC | UTF8PROC_NLF2LF,
+    };
+    size_t i, o, j;
+
+    for (i = 0; i < sizeof(inputs)/sizeof(*inputs); ++i) {
+        const utf8proc_uint8_t *str = (const utf8proc_uint8_t *) inputs[i];
+        utf8proc_ssize_t len = (utf8proc_ssize_t) strlen(inputs[i]);
+        for (o = 0; o < sizeof(options)/sizeof(*options); ++o) {
+            int nullterm;
+            for (nullterm = 0; nullterm < 2; ++nullterm) {
+                unsigned int opt = options[o] | (nullterm ? UTF8PROC_NULLTERM : 0);
+                utf8proc_int32_t fast[256], ref[256];
+                utf8proc_ssize_t need_fast = utf8proc_decompose(str, len, NULL, 0, opt);
+                utf8proc_ssize_t need_ref = utf8proc_decompose_custom(str, len, NULL, 0, opt, identity_func, NULL);
+                utf8proc_ssize_t n_fast, n_ref;
+                check(need_fast == need_ref, "ascii fast path: size %zd vs %zd (input %zu, options 0x%x)",
+                      need_fast, need_ref, i, opt);
+                if (need_fast < 0 || need_fast > 256) continue;
+                n_fast = utf8proc_decompose(str, len, fast, 256, opt);
+                n_ref = utf8proc_decompose_custom(str, len, ref, 256, opt, identity_func, NULL);
+                check(n_fast == n_ref, "ascii fast path: length %zd vs %zd (input %zu, options 0x%x)",
+                      n_fast, n_ref, i, opt);
+                for (j = 0; j < (size_t) (n_ref < 0 ? 0 : n_ref); ++j)
+                    check(fast[j] == ref[j], "ascii fast path: code point %zu differs (input %zu, options 0x%x)", j, i, opt);
+                /* buffer smaller than needed must report the needed size and not overflow */
+                if (need_fast > 0) {
+                    utf8proc_int32_t small[256];
+                    utf8proc_ssize_t n_small = utf8proc_decompose(str, len, small, need_fast - 1, opt);
+                    check(n_small == need_fast, "ascii fast path: small buffer returned %zd, expected %zd (input %zu, options 0x%x)",
+                          n_small, need_fast, i, opt);
+                }
+            }
+        }
+    }
+    printf("PASSED: ASCII fast path matches the general code path\n");
+}
+
 int main(void)
 {
     issue128();
     issue102();
     issue317();
     issue288();
+    check_ascii_fast_path();
 #ifdef UNICODE_VERSION
     printf("Unicode version: Makefile has %s, has API %s\n", UNICODE_VERSION, utf8proc_unicode_version());
     check(!strcmp(UNICODE_VERSION, utf8proc_unicode_version()), "utf8proc_unicode_version mismatch");
